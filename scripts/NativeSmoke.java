@@ -45,6 +45,7 @@ public final class NativeSmoke {
             Files.writeString(Path.of("native-smoke-result.txt"), "Synthetic drawing test. Not a phone benchmark.\nFinish: " +
                 finish + "\nPrompt fallback: " + parsed.fallback + "\n\n" + text);
             System.out.println("PASS: JNI, cancellation, model + projector load, image encoding, generation and output parsing");
+            System.out.println("SYNTHETIC_RESULT_BEGIN\n" + text + "\nSYNTHETIC_RESULT_END");
         } finally { NativeBridge.freeJob(job); }
     }
 }

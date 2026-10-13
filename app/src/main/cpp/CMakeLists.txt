@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(photo_ai LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
+# Keep CPU inference optimized even when Java is packaged as a debug APK.
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Native inference optimization" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
