@@ -128,69 +128,101 @@ Java_app_photoprompt_offline_NativeBridge_generate(
         Owned<mtmd_bitmap, mtmd_bitmap_free> bitmap(
             mtmd_bitmap_init(width, height, rgb.data()), mtmd_bitmap_free);
         if (!bitmap) throw std::runtime_error("IMAGE_LOAD_FAILED");
-        std::string content = std::string(mtmd_default_marker()) + "\n" + question.get();
-        llama_chat_message chat = {"user", content.c_str()};
-        // Model import verifies the exact SmolVLM pair; this fixed template is deliberate.
-        int length = llama_chat_apply_template("smolvlm", &chat, 1, true, nullptr, 0);
-        if (length <= 0) throw std::runtime_error("CHAT_TEMPLATE_FAILED");
-        std::vector<char> formatted(static_cast<size_t>(length) + 1, '\0');
-        int written = llama_chat_apply_template("smolvlm", &chat, 1, true, formatted.data(), length);
-        if (written != length) throw std::runtime_error("CHAT_TEMPLATE_FAILED");
-        mtmd_input_text input{};
-        input.text = formatted.data();
-        input.text_len = static_cast<size_t>(length);
-        input.add_special = true;
-        input.parse_special = true;
-        const mtmd_bitmap * images[] = {bitmap.get()};
-        Owned<mtmd_input_chunks, mtmd_input_chunks_free> chunks(mtmd_input_chunks_init(), mtmd_input_chunks_free);
-        if (!chunks || mtmd_tokenize(vision.get(), chunks.get(), &input, images, 1) != 0)
-            throw std::runtime_error("IMAGE_TOKENIZE_FAILED");
-        auto positions = mtmd_helper_get_n_pos(chunks.get());
-        if (positions < 0 || positions + 700 >= static_cast<llama_pos>(llama_n_ctx(ctx.get())))
-            throw std::runtime_error("IMAGE_TOO_COMPLEX");
-        progress(env, listener, callback, 3, "");
-        llama_pos past = 0;
-        int evaluated = mtmd_helper_eval_chunks(vision.get(), ctx.get(), chunks.get(), 0, 0,
-                                                256, true, &past);
-        check_cancel(job);
-        if (evaluated != 0) throw std::runtime_error("IMAGE_EVAL_FAILED");
-        // Vision weights and RGB can be released before text generation.
-        chunks.reset(); bitmap.reset(); vision.reset();
-        rgb.clear(); rgb.shrink_to_fit();
-
-        Owned<llama_sampler, llama_sampler_free> sampler(
-            llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
-        if (!sampler) throw std::runtime_error("SAMPLER_FAILED");
+        struct Question { const char * title; std::string prompt; };
+        const std::vector<Question> questions = {
+            {"Subject and setting", question.get()},
+            {"Composition and viewpoint", "Describe the framing, camera angle, subject placement and perspective in this image. Answer in English in two or three sentences."},
+            {"Lighting and shadows", "Describe the visible lighting, direction and softness of the light, highlights and shadows in this image. State uncertainty. Answer in English in two or three sentences."},
+            {"Color and mood", "Describe the main colors, color temperature, contrast and mood of this image in English in two or three sentences."},
+            {"Focus and lens impression", "Describe the sharp and blurred areas, depth of field and apparent perspective. Do not name an exact lens or camera. Answer in English in two or three sentences."},
+            {"Style and processing", "Describe the visual style, photographic genre, textures and apparent processing of this image. Do not claim who created it. Answer in English in two or three sentences."}
+        };
+        std::string output = "ANALYSIS:\n";
+        std::string prompt;
+        std::string finish = "complete";
         const llama_vocab * vocab = llama_model_get_vocab(model.get());
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(40));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.9f, 1));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.2f));
-        llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
-        std::string output;
-        std::string finish = "length";
-        for (int i = 0; i < 680; ++i) {
+        const mtmd_bitmap * images[] = {bitmap.get()};
+        for (const auto & item : questions) {
             check_cancel(job);
-            auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
-            if (llama_vocab_is_eog(vocab, token)) { finish = "complete"; break; }
-            char local[256];
-            int n = llama_token_to_piece(vocab, token, local, sizeof(local), 0, false);
-            if (n < 0) {
-                std::vector<char> expanded(static_cast<size_t>(-n));
-                n = llama_token_to_piece(vocab, token, expanded.data(), expanded.size(), 0, false);
-                if (n < 0) throw std::runtime_error("TOKEN_DECODE_FAILED");
-                output.append(expanded.data(), static_cast<size_t>(n));
-            } else output.append(local, static_cast<size_t>(n));
-            if (i % 8 == 0) progress(env, listener, callback, 4, output);
-            if (i + 1 < 680) {
-                // SmolVLM uses standard sequential positions, unlike M-RoPE models.
-                int result = llama_decode(ctx.get(), llama_batch_get_one(&token, 1));
+            // Independent short questions are more reliable for this small model
+            // than asking it to obey a long schema. Keep weights loaded between them.
+            llama_memory_clear(llama_get_memory(ctx.get()), true);
+            std::string content = std::string(mtmd_default_marker()) + "\n" + item.prompt;
+            llama_chat_message chat = {"user", content.c_str()};
+            int length = llama_chat_apply_template("smolvlm", &chat, 1, true, nullptr, 0);
+            if (length <= 0) throw std::runtime_error("CHAT_TEMPLATE_FAILED");
+            std::vector<char> formatted(static_cast<size_t>(length) + 1, '\0');
+            int written = llama_chat_apply_template("smolvlm", &chat, 1, true, formatted.data(), length);
+            if (written != length) throw std::runtime_error("CHAT_TEMPLATE_FAILED");
+            mtmd_input_text input{};
+            input.text = formatted.data();
+            input.text_len = static_cast<size_t>(length);
+            input.add_special = true;
+            input.parse_special = true;
+            Owned<mtmd_input_chunks, mtmd_input_chunks_free> chunks(mtmd_input_chunks_init(), mtmd_input_chunks_free);
+            if (!chunks || mtmd_tokenize(vision.get(), chunks.get(), &input, images, 1) != 0)
+                throw std::runtime_error("IMAGE_TOKENIZE_FAILED");
+            auto positions = mtmd_helper_get_n_pos(chunks.get());
+            constexpr int max_tokens = 160;
+            if (positions < 0 || positions + max_tokens + 4 >= static_cast<llama_pos>(llama_n_ctx(ctx.get())))
+                throw std::runtime_error("IMAGE_TOO_COMPLEX");
+            output += std::string(item.title) + ":\n";
+            progress(env, listener, callback, 3, output);
+            llama_pos past = 0;
+            int evaluated = mtmd_helper_eval_chunks(vision.get(), ctx.get(), chunks.get(), 0, 0,
+                                                    256, true, &past);
+            check_cancel(job);
+            if (evaluated != 0) throw std::runtime_error("IMAGE_EVAL_FAILED");
+            chunks.reset();
+            Owned<llama_sampler, llama_sampler_free> sampler(
+                llama_sampler_chain_init(llama_sampler_chain_default_params()), llama_sampler_free);
+            if (!sampler) throw std::runtime_error("SAMPLER_FAILED");
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_k(40));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_top_p(0.9f, 1));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_temp(0.2f));
+            llama_sampler_chain_add(sampler.get(), llama_sampler_init_dist(42));
+            std::string answer;
+            bool complete = false;
+            for (int i = 0; i < max_tokens; ++i) {
                 check_cancel(job);
-                if (result != 0) throw std::runtime_error("TEXT_EVAL_FAILED");
+                auto token = llama_sampler_sample(sampler.get(), ctx.get(), -1);
+                if (llama_vocab_is_eog(vocab, token)) { complete = true; break; }
+                char local[256];
+                int n = llama_token_to_piece(vocab, token, local, sizeof(local), 0, false);
+                if (n < 0) {
+                    std::vector<char> expanded(static_cast<size_t>(-n));
+                    n = llama_token_to_piece(vocab, token, expanded.data(), expanded.size(), 0, false);
+                    if (n < 0) throw std::runtime_error("TOKEN_DECODE_FAILED");
+                    answer.append(expanded.data(), static_cast<size_t>(n));
+                } else answer.append(local, static_cast<size_t>(n));
+                if (i % 8 == 0) progress(env, listener, callback, 4, output + answer);
+                if (i + 1 < max_tokens) {
+                    int result = llama_decode(ctx.get(), llama_batch_get_one(&token, 1));
+                    check_cancel(job);
+                    if (result != 0) throw std::runtime_error("TEXT_EVAL_FAILED");
+                }
             }
+            if (!complete) finish = "length";
+            if (answer.find_first_not_of(" \t\r\n") == std::string::npos) throw std::runtime_error("EMPTY_OUTPUT");
+            output += answer + "\n\n";
+            // Compose the copyable prompt from the actual six visual answers.
+            // There is no generic fallback scene or invented photography metadata.
+            std::string flat;
+            bool space = true;
+            for (unsigned char c : answer) {
+                if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                    if (!space) flat += ' ';
+                    space = true;
+                } else { flat += static_cast<char>(c); space = false; }
+            }
+            while (!flat.empty() && flat.back() == ' ') flat.pop_back();
+            if (!prompt.empty()) prompt += ' ';
+            prompt += std::string(item.title) + ": " + flat;
+            if (!flat.empty() && flat.back() != '.' && flat.back() != '!' && flat.back() != '?') prompt += '.';
         }
         check_cancel(job);
-        if (output.empty()) throw std::runtime_error("EMPTY_OUTPUT");
+        output += "PROMPT:\n" + prompt;
         progress(env, listener, callback, 4, output);
         auto byte_class = env->FindClass("[B");
         auto result = env->NewObjectArray(2, byte_class, nullptr);

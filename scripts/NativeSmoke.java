@@ -42,6 +42,11 @@ public final class NativeSmoke {
             if (!finish.equals("complete") && !finish.equals("length")) throw new AssertionError("Unexpected finish reason");
             PromptFormat parsed = PromptFormat.parse(text);
             if (parsed.prompt.isEmpty()) throw new AssertionError("No copyable prompt");
+            if (parsed.fallback) throw new AssertionError("Structured analysis was not produced");
+            for (String section : new String[] {"Subject and setting", "Composition and viewpoint", "Lighting and shadows", "Color and mood", "Focus and lens impression", "Style and processing"}) {
+                if (!parsed.analysis.contains(section + ":") || !parsed.prompt.contains(section + ":"))
+                    throw new AssertionError("Missing section: " + section);
+            }
             Files.writeString(Path.of("native-smoke-result.txt"), "Synthetic drawing test. Not a phone benchmark.\nFinish: " +
                 finish + "\nPrompt fallback: " + parsed.fallback + "\n\n" + text);
             System.out.println("PASS: JNI, cancellation, model + projector load, image encoding, generation and output parsing");

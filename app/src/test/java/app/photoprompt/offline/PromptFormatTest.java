@@ -41,4 +41,9 @@ public class PromptFormatTest {
         assertTrue(report.contains("My edited prompt."));
         assertFalse(report.contains("Canon"));
     }
+    @Test public void usesFinalPromptHeaderWhenDescriptionQuotesAnotherHeader() {
+        PromptFormat r = PromptFormat.parse("ANALYSIS:\nThe poster contains text.\nPROMPT: text on the poster.\nMore analysis.\nPROMPT:\nThe actual final prompt.");
+        assertEquals("The actual final prompt.", r.prompt);
+        assertTrue(r.analysis.contains("text on the poster"));
+    }
 }
