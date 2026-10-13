@@ -1,0 +1,52 @@
+name: Test local vision engine
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/src/main/cpp/**'
+      - 'app/src/main/java/app/photoprompt/offline/NativeBridge.java'
+      - 'app/src/main/java/app/photoprompt/offline/PromptFormat.java'
+      - 'scripts/NativeSmoke.java'
+      - '.github/workflows/engine-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  vision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: af50f2f248b475d9760f8e67503d01c0f194f5f4
+          path: vendor/llama.cpp
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build the JNI engine for Linux
+        run: |
+          cmake -S app/src/main/cpp -B build-native -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-native --target photo_ai -j 2
+      - name: Fetch and verify the exact supported model pair
+        run: |
+          mkdir -p models
+          curl --fail --location --retry 3 --max-time 300 -o models/model.gguf 'https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/72e9860/SmolVLM-500M-Instruct-Q8_0.gguf'
+          curl --fail --location --retry 3 --max-time 300 -o models/projector.gguf 'https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/72e9860/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf'
+          printf '%s\n' '9d4612de6a42214499e301494a3ecc2be0abdd9de44e663bda63f1152fad1bf4  models/model.gguf' 'd1eb8b6b23979205fdf63703ed10f788131a3f812c7b1f72e0119d5d81295150  models/projector.gguf' | sha256sum -c -
+      - name: Exercise native cancellation and image-to-text generation
+        run: |
+          javac -d build-test app/src/main/java/app/photoprompt/offline/NativeBridge.java app/src/main/java/app/photoprompt/offline/PromptFormat.java scripts/NativeSmoke.java
+          java -Xcheck:jni -Djava.library.path=build-native -cp build-test app.photoprompt.offline.NativeSmoke models/model.gguf models/projector.gguf
+      - name: Save synthetic-image result
+        uses: actions/upload-artifact@v4
+        with:
+          name: vision-engine-smoke-result
+          path: native-smoke-result.txt
+          if-no-files-found: error
