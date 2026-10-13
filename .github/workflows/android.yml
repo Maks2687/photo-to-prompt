@@ -1,0 +1,67 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v4
+      - name: Check out pinned llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: af50f2f248b475d9760f8e67503d01c0f194f5f4
+          path: vendor/llama.cpp
+          persist-credentials: false
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Keep personal debug signing identity between builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: photo-to-prompt-debug-signing-v1
+      - name: Check source privacy configuration
+        run: |
+          python3 scripts/check_project.py
+          python3 scripts/collect_licenses.py
+      - name: Test, lint and build arm64 APK
+        run: gradle --no-daemon --max-workers=2 testDebugUnitTest lintDebug assembleDebug
+      - name: Inspect APK and collect artifacts
+        run: |
+          python3 scripts/inspect_apk.py app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/photo-to-prompt-arm64.apk
+          cp INSTALL_RU.md dist/INSTALL_RU.md
+          cp app/build/reports/lint-results-debug.html dist/lint-report.html
+          sha256sum dist/photo-to-prompt-arm64.apk > dist/SHA256SUMS.txt
+      - name: Downloadable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-to-prompt-apk
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
